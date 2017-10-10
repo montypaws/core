@@ -156,6 +156,45 @@ class CashOut < ActiveRecord::Base
     klass.new(attrs)
   end
 
+  def sync_to_quickbooks_if_necessary
+    raise "Not sent!" unless sent?
+
+    address.sync_to_quickbooks_if_necessary
+
+    account_ref = case self.class.name
+    when 'CashOut::Paypal' then { "value"=>"103", "name"=>"Developer Liability:Paypal" }
+    when 'CashOut::Bitcoin' then { "value"=>"147" }
+    when 'CashOut::Check' then { "value"=>"63" }
+    when 'CashOut::Ripple' then { "value"=>"151" }
+    else raise "Unknown account for #{self.class.name}"
+    end
+
+    response = Quickbooks.api_call(
+      path: "purchase",
+      method: :post,
+      post_body: {
+        "TxnDate" => sent_at.to_date.to_s,
+        "AccountRef" => account_ref,
+        "PrivateNote" => "Cash out ##{self.id}",
+        "EntityRef" => {"value"=>"#{address.quickbooks_vendor_id}", "type"=>"Vendor"},
+        "PaymentType" => "Check",
+        #"PrintStatus" => "NeedToPrint",
+        "Line" => [
+          {
+            "Amount" => amount,
+            "DetailType" => "AccountBasedExpenseLineDetail",
+            "AccountBasedExpenseLineDetail" => {
+              "AccountRef" => { "value" => "95", "name"=>"Unpaid Developer Liability" }
+            }
+          }
+        ]
+      }
+    )
+
+    self.quickbooks_txn_id = response['Purchase']['Id']
+    self.save!
+  end
+
 private
 
   def add_serialized_addresses
